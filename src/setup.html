@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VoxPad Setup</title>
+  <link rel="stylesheet" href="shared.css">
+  <style>
+    body {
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 32px;
+    }
+
+    #setup {
+      max-width: 400px;
+      text-align: center;
+    }
+
+    h1 {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+
+    .tagline {
+      color: var(--text-dim);
+      font-size: 14px;
+      margin-bottom: 32px;
+    }
+
+    .step {
+      display: none;
+    }
+
+    .step.active {
+      display: block;
+    }
+
+    .progress-container {
+      background: rgba(255,255,255,0.06);
+      border-radius: 8px;
+      overflow: hidden;
+      height: 8px;
+      margin: 16px 0;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 8px;
+      transition: width 0.3s ease;
+      width: 0%;
+    }
+
+    .download-name {
+      font-size: 12px;
+      color: var(--text-dim);
+      margin-bottom: 4px;
+    }
+
+    .download-size {
+      font-size: 11px;
+      color: var(--text-dim);
+    }
+
+    .ready-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+
+    .hotkey-display {
+      display: inline-block;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 12px;
+      font-size: 14px;
+      margin: 8px 0;
+    }
+
+    button.primary {
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 24px;
+      font-family: var(--font-mono);
+      font-size: 14px;
+      cursor: pointer;
+      margin-top: 16px;
+    }
+
+    button.primary:hover {
+      opacity: 0.9;
+    }
+  </style>
+</head>
+<body>
+  <div id="setup">
+    <h1>VoxPad</h1>
+    <p class="tagline">See what you're saying.</p>
+
+    <!-- Step 1: Download -->
+    <div id="step-download" class="step active">
+      <p>Downloading speech models...</p>
+      <div class="progress-container">
+        <div id="progress-bar" class="progress-bar"></div>
+      </div>
+      <p id="download-name" class="download-name"></p>
+      <p id="download-size" class="download-size"></p>
+    </div>
+
+    <!-- Step 2: Ready -->
+    <div id="step-ready" class="step">
+      <p class="ready-icon">&#10003;</p>
+      <p>Ready to go!</p>
+      <p style="margin-top: 12px; font-size: 13px; color: var(--text-dim);">
+        Hold <span class="hotkey-display">Insert</span> to quick-dictate<br>
+        Tap <span class="hotkey-display">Insert</span> to open the buffer
+      </p>
+      <button id="btn-start" class="primary">Start VoxPad</button>
+    </div>
+  </div>
+
+  <script type="module">
+    const { invoke } = await import('@tauri-apps/api/core');
+    const { listen } = await import('@tauri-apps/api/event');
+    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+
+    const progressBar = document.getElementById('progress-bar');
+    const downloadName = document.getElementById('download-name');
+    const downloadSize = document.getElementById('download-size');
+
+    // Check if models need downloading
+    const missing = await invoke('check_models');
+
+    if (missing.length === 0) {
+      // All models present — skip to ready
+      document.getElementById('step-download').classList.remove('active');
+      document.getElementById('step-ready').classList.add('active');
+    } else {
+      // Start download
+      listen('download-progress', (event) => {
+        const { name, bytes_downloaded, bytes_total, overall_bytes_downloaded, overall_bytes_total } = event.payload;
+        const pct = overall_bytes_total > 0 ? (overall_bytes_downloaded / overall_bytes_total * 100) : 0;
+        progressBar.style.width = `${pct}%`;
+        downloadName.textContent = name;
+        const dlMB = (bytes_downloaded / 1e6).toFixed(0);
+        const totalMB = (bytes_total / 1e6).toFixed(0);
+        downloadSize.textContent = `${dlMB} / ${totalMB} MB`;
+      });
+
+      listen('download-complete', () => {
+        document.getElementById('step-download').classList.remove('active');
+        document.getElementById('step-ready').classList.add('active');
+      });
+
+      invoke('download_models').catch(err => {
+        downloadName.textContent = `Error: ${err}`;
+        downloadSize.textContent = '';
+      });
+    }
+
+    document.getElementById('btn-start').addEventListener('click', async () => {
+      await getCurrentWindow().close();
+    });
+  </script>
+</body>
+</html>

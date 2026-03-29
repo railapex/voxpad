@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VoxPad Settings</title>
+  <link rel="stylesheet" href="shared.css">
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <div id="settings">
+    <h2>VoxPad Settings</h2>
+
+    <section>
+      <h3>Shortcut</h3>
+      <div class="setting-row">
+        <label>Hotkey</label>
+        <button id="hotkey-btn" class="hotkey-capture">Insert</button>
+        <small>Press to set a new hotkey. Hold = quick mode, tap = buffer mode.</small>
+      </div>
+      <div class="setting-row">
+        <label>Hold threshold</label>
+        <input type="range" id="hold-threshold" min="150" max="500" step="25" value="250">
+        <span id="hold-threshold-value">250ms</span>
+      </div>
+    </section>
+
+    <section>
+      <h3>Microphone</h3>
+      <div class="setting-row">
+        <label>Input device</label>
+        <select id="mic-device">
+          <option value="">System Default</option>
+        </select>
+      </div>
+      <div id="mic-level-container">
+        <div id="mic-level"></div>
+      </div>
+    </section>
+
+    <section>
+      <h3>Startup</h3>
+      <div class="setting-row">
+        <label>Start at login</label>
+        <label class="toggle">
+          <input type="checkbox" id="start-at-login">
+          <span class="toggle-slider"></span>
+        </label>
+      </div>
+    </section>
+
+    <section>
+      <h3>About</h3>
+      <p class="about">VoxPad v0.1.0 — See what you're saying.</p>
+      <p class="about"><a href="https://github.com/railapex/voxpad" target="_blank">github.com/railapex/voxpad</a></p>
+    </section>
+  </div>
+  <script type="module" src="settings.js"></script>
+</body>
+</html>
