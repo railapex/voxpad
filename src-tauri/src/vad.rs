@@ -1,9 +1,14 @@
 // Direct Silero VAD implementation via ort.
-// No third-party crate needed — the model is a simple LSTM:
-//   Input: audio chunk (512 samples at 16kHz), sample rate, hidden state (h, c)
-//   Output: speech probability [0.0, 1.0], updated hidden state
+// Model: onnx-community/silero-vad (silero_vad.onnx)
 //
-// Reference: https://github.com/snakers4/silero-vad
+// Inputs:
+//   input: float32[1, chunk_size]  — audio samples
+//   state: float32[2, 1, 128]     — LSTM hidden state
+//   sr:    int64 scalar            — sample rate (16000)
+//
+// Outputs:
+//   output: float32[1, 1]         — speech probability
+//   stateN: float32[2, 1, 128]    — updated hidden state
 
 use ort::session::Session;
 use ort::value::Tensor;
@@ -11,15 +16,14 @@ use std::path::Path;
 
 const CHUNK_SIZE: usize = 512; // 32ms at 16kHz
 const SAMPLE_RATE: i64 = 16000;
-const HIDDEN_DIM: usize = 64;
+const HIDDEN_DIM: usize = 128;
 const NUM_LAYERS: usize = 2;
+const STATE_SIZE: usize = NUM_LAYERS * 1 * HIDDEN_DIM; // [2, 1, 128] = 256 floats
 
 pub struct SileroVad {
     session: Session,
-    /// Hidden state h — shape [2, 1, 64]
-    h: Vec<f32>,
-    /// Cell state c — shape [2, 1, 64]
-    c: Vec<f32>,
+    /// Combined LSTM state — shape [2, 1, 128]
+    state: Vec<f32>,
     /// Speech probability threshold
     threshold: f32,
     /// Consecutive silence frames needed to declare end-of-speech
@@ -42,13 +46,11 @@ impl SileroVad {
             .commit_from_file(model_path)
             .map_err(|e| format!("VAD load model: {e}"))?;
 
-        let state_size = NUM_LAYERS * 1 * HIDDEN_DIM; // [2, 1, 64] = 128 floats
         log::info!("[vad] model loaded from {}", model_path.display());
 
         Ok(Self {
             session,
-            h: vec![0.0f32; state_size],
-            c: vec![0.0f32; state_size],
+            state: vec![0.0f32; STATE_SIZE],
             threshold,
             min_silence_frames: 10, // ~320ms at 32ms/frame
             min_speech_frames: 3,   // ~96ms at 32ms/frame
@@ -63,48 +65,41 @@ impl SileroVad {
     pub fn process_chunk(&mut self, audio: &[f32]) -> Result<f32, String> {
         assert_eq!(audio.len(), CHUNK_SIZE, "VAD expects {CHUNK_SIZE} samples per chunk");
 
-        // Create input tensors using ort v2 API: Tensor::from_array((shape, data))
+        // Input tensor: [1, chunk_size]
         let input = Tensor::from_array((vec![1i64, CHUNK_SIZE as i64], audio.to_vec()))
             .map_err(|e| format!("VAD input tensor: {e}"))?;
+
+        // State tensor: [2, 1, 128]
+        let state_tensor = Tensor::from_array((
+            vec![NUM_LAYERS as i64, 1i64, HIDDEN_DIM as i64],
+            self.state.clone(),
+        ))
+        .map_err(|e| format!("VAD state tensor: {e}"))?;
+
+        // Sample rate: scalar int64
         let sr = Tensor::from_array((vec![1i64], vec![SAMPLE_RATE]))
             .map_err(|e| format!("VAD sr tensor: {e}"))?;
-        let h_tensor = Tensor::from_array((
-            vec![NUM_LAYERS as i64, 1i64, HIDDEN_DIM as i64],
-            self.h.clone(),
-        ))
-        .map_err(|e| format!("VAD h tensor: {e}"))?;
-        let c_tensor = Tensor::from_array((
-            vec![NUM_LAYERS as i64, 1i64, HIDDEN_DIM as i64],
-            self.c.clone(),
-        ))
-        .map_err(|e| format!("VAD c tensor: {e}"))?;
 
         let outputs = self
             .session
             .run(ort::inputs![
                 "input" => input,
+                "state" => state_tensor,
                 "sr" => sr,
-                "h" => h_tensor,
-                "c" => c_tensor,
             ])
             .map_err(|e| format!("VAD inference: {e}"))?;
 
-        // Extract speech probability — output[0] is shape [1, 1]
-        let (_, prob_data) = outputs[0]
+        // Extract speech probability — output[0] "output"
+        let (_, prob_data) = outputs["output"]
             .try_extract_tensor::<f32>()
             .map_err(|e| format!("VAD output prob: {e}"))?;
         let prob = prob_data[0];
 
-        // Update hidden states from outputs[1] and outputs[2]
-        let (_, new_h) = outputs[1]
+        // Update state from output[1] "stateN"
+        let (_, new_state) = outputs["stateN"]
             .try_extract_tensor::<f32>()
-            .map_err(|e| format!("VAD output h: {e}"))?;
-        let (_, new_c) = outputs[2]
-            .try_extract_tensor::<f32>()
-            .map_err(|e| format!("VAD output c: {e}"))?;
-
-        self.h = new_h.to_vec();
-        self.c = new_c.to_vec();
+            .map_err(|e| format!("VAD output state: {e}"))?;
+        self.state = new_state.to_vec();
 
         Ok(prob)
     }
@@ -138,10 +133,9 @@ impl SileroVad {
         }
     }
 
-    /// Reset internal state (between utterances or on mode change).
+    /// Reset internal state.
     pub fn reset(&mut self) {
-        self.h.fill(0.0);
-        self.c.fill(0.0);
+        self.state.fill(0.0);
         self.speech_frames = 0;
         self.silence_frames = 0;
         self.is_speaking = false;
@@ -154,12 +148,8 @@ impl SileroVad {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum VadEvent {
-    /// Silence — no speech detected
     Silence,
-    /// Speech just started (transition from silence → speech)
     SpeechStart,
-    /// Ongoing speech
     Speaking,
-    /// Speech just ended (transition from speech → silence)
     SpeechEnd,
 }
