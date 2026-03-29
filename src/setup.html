@@ -16,36 +16,49 @@
     }
 
     #setup {
-      max-width: 400px;
+      max-width: 440px;
       text-align: center;
+      width: 100%;
     }
 
     h1 {
       font-size: 24px;
       font-weight: 700;
-      margin-bottom: 8px;
+      margin-bottom: 4px;
     }
 
     .tagline {
       color: var(--text-dim);
       font-size: 14px;
-      margin-bottom: 32px;
+      margin-bottom: 28px;
     }
 
-    .step {
-      display: none;
+    .step { display: none; }
+    .step.active { display: block; }
+
+    .model-list {
+      text-align: left;
+      margin: 16px 0;
+      font-size: 12px;
+      color: var(--text-dim);
     }
 
-    .step.active {
-      display: block;
+    .model-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+      border-bottom: 1px solid var(--border);
     }
+
+    .model-item.done { color: #22c55e; }
+    .model-item.active { color: var(--text); font-weight: 600; }
 
     .progress-container {
       background: rgba(255,255,255,0.06);
       border-radius: 8px;
       overflow: hidden;
       height: 8px;
-      margin: 16px 0;
+      margin: 12px 0 8px;
     }
 
     .progress-bar {
@@ -56,20 +69,29 @@
       width: 0%;
     }
 
-    .download-name {
+    .status-line {
       font-size: 12px;
       color: var(--text-dim);
-      margin-bottom: 4px;
+      margin: 4px 0;
     }
 
-    .download-size {
-      font-size: 11px;
-      color: var(--text-dim);
+    .error-line {
+      font-size: 12px;
+      color: #ef4444;
+      margin: 8px 0;
+      word-break: break-all;
     }
 
-    .ready-icon {
+    .total-size {
+      font-size: 13px;
+      color: var(--text);
+      margin-bottom: 12px;
+    }
+
+    .ready-check {
       font-size: 48px;
-      margin-bottom: 16px;
+      color: #22c55e;
+      margin-bottom: 12px;
     }
 
     .hotkey-display {
@@ -79,7 +101,7 @@
       border-radius: 6px;
       padding: 4px 12px;
       font-size: 14px;
-      margin: 8px 0;
+      margin: 4px 0;
     }
 
     button.primary {
@@ -94,9 +116,7 @@
       margin-top: 16px;
     }
 
-    button.primary:hover {
-      opacity: 0.9;
-    }
+    button.primary:hover { opacity: 0.9; }
   </style>
 </head>
 <body>
@@ -106,17 +126,18 @@
 
     <!-- Step 1: Download -->
     <div id="step-download" class="step active">
-      <p>Downloading speech models...</p>
+      <p class="total-size" id="total-size">Checking models...</p>
+      <div id="model-list" class="model-list"></div>
       <div class="progress-container">
         <div id="progress-bar" class="progress-bar"></div>
       </div>
-      <p id="download-name" class="download-name"></p>
-      <p id="download-size" class="download-size"></p>
+      <p id="status-line" class="status-line"></p>
+      <p id="error-line" class="error-line" style="display:none"></p>
     </div>
 
     <!-- Step 2: Ready -->
     <div id="step-ready" class="step">
-      <p class="ready-icon">&#10003;</p>
+      <p class="ready-check">&#10003;</p>
       <p>Ready to go!</p>
       <p style="margin-top: 12px; font-size: 13px; color: var(--text-dim);">
         Hold <span class="hotkey-display">Insert</span> to quick-dictate<br>
@@ -127,46 +148,94 @@
   </div>
 
   <script type="module">
-    const { invoke } = await import('@tauri-apps/api/core');
-    const { listen } = await import('@tauri-apps/api/event');
-    const { getCurrentWindow } = await import('@tauri-apps/api/window');
+    let invoke, listen, getCurrentWindow;
+    try {
+      const core = await import('@tauri-apps/api/core');
+      const event = await import('@tauri-apps/api/event');
+      const win = await import('@tauri-apps/api/window');
+      invoke = core.invoke;
+      listen = event.listen;
+      getCurrentWindow = win.getCurrentWindow;
+    } catch (err) {
+      document.getElementById('error-line').textContent = `API load failed: ${err}`;
+      document.getElementById('error-line').style.display = 'block';
+      throw err;
+    }
 
     const progressBar = document.getElementById('progress-bar');
-    const downloadName = document.getElementById('download-name');
-    const downloadSize = document.getElementById('download-size');
+    const statusLine = document.getElementById('status-line');
+    const errorLine = document.getElementById('error-line');
+    const totalSizeEl = document.getElementById('total-size');
+    const modelListEl = document.getElementById('model-list');
 
-    // Check if models need downloading
-    const missing = await invoke('check_models');
+    function formatBytes(bytes) {
+      if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+      if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(0)} MB`;
+      if (bytes >= 1e3) return `${(bytes / 1e3).toFixed(0)} KB`;
+      return `${bytes} B`;
+    }
 
-    if (missing.length === 0) {
-      // All models present — skip to ready
-      document.getElementById('step-download').classList.remove('active');
-      document.getElementById('step-ready').classList.add('active');
-    } else {
-      // Start download
-      listen('download-progress', (event) => {
-        const { name, bytes_downloaded, bytes_total, overall_bytes_downloaded, overall_bytes_total } = event.payload;
-        const pct = overall_bytes_total > 0 ? (overall_bytes_downloaded / overall_bytes_total * 100) : 0;
-        progressBar.style.width = `${pct}%`;
-        downloadName.textContent = name;
-        const dlMB = (bytes_downloaded / 1e6).toFixed(0);
-        const totalMB = (bytes_total / 1e6).toFixed(0);
-        downloadSize.textContent = `${dlMB} / ${totalMB} MB`;
-      });
+    try {
+      // Check what needs downloading
+      const missing = await invoke('check_models');
+      console.log('[setup] missing models:', missing);
 
-      listen('download-complete', async () => {
-        downloadName.textContent = 'Loading models...';
-        downloadSize.textContent = 'This may take a minute on first run';
-        // Trigger model preload after download
-        await invoke('preload_models');
+      if (missing.length === 0) {
         document.getElementById('step-download').classList.remove('active');
         document.getElementById('step-ready').classList.add('active');
-      });
+      } else {
+        // Show model list and total size
+        const totalBytes = missing.reduce((sum, m) => sum + m.size_bytes, 0);
+        totalSizeEl.textContent = `Downloading ${missing.length} files (${formatBytes(totalBytes)})`;
 
-      invoke('download_models_cmd').catch(err => {
-        downloadName.textContent = `Error: ${err}`;
-        downloadSize.textContent = '';
-      });
+        // Build model list
+        modelListEl.innerHTML = missing.map(m =>
+          `<div class="model-item" id="model-${m.name.replace(/\s/g, '-')}">
+            <span>${m.name}</span>
+            <span>${formatBytes(m.size_bytes)}</span>
+          </div>`
+        ).join('');
+
+        // Listen for progress
+        await listen('download-progress', (event) => {
+          const { name, bytes_downloaded, bytes_total, overall_bytes_downloaded, overall_bytes_total } = event.payload;
+          const pct = overall_bytes_total > 0 ? (overall_bytes_downloaded / overall_bytes_total * 100) : 0;
+          progressBar.style.width = `${Math.min(pct, 100)}%`;
+          statusLine.textContent = `${name}: ${formatBytes(bytes_downloaded)} / ${formatBytes(bytes_total)} — ${pct.toFixed(0)}% overall`;
+
+          // Update model list styling
+          document.querySelectorAll('.model-item').forEach(el => el.classList.remove('active'));
+          const activeEl = document.getElementById(`model-${name.replace(/\s/g, '-')}`);
+          if (activeEl) activeEl.classList.add('active');
+        });
+
+        await listen('download-complete', async () => {
+          statusLine.textContent = 'Loading models into GPU...';
+          progressBar.style.width = '100%';
+          try {
+            await invoke('preload_models');
+          } catch (err) {
+            console.warn('[setup] preload error (non-fatal):', err);
+          }
+          document.getElementById('step-download').classList.remove('active');
+          document.getElementById('step-ready').classList.add('active');
+        });
+
+        // Start download
+        statusLine.textContent = 'Starting download...';
+        try {
+          await invoke('download_models_cmd');
+        } catch (err) {
+          console.error('[setup] download error:', err);
+          errorLine.textContent = `Download failed: ${err}`;
+          errorLine.style.display = 'block';
+          statusLine.textContent = 'Download failed — check your internet connection and try again.';
+        }
+      }
+    } catch (err) {
+      console.error('[setup] init error:', err);
+      errorLine.textContent = `Setup error: ${err}`;
+      errorLine.style.display = 'block';
     }
 
     document.getElementById('btn-start').addEventListener('click', async () => {
