@@ -48,15 +48,16 @@ pub fn run() {
             // 4. Initialize ORT environment (once, shared by all models)
             ort::init().commit();
 
-            // 5. Create separate channels for streaming (Nemotron) and refinement (TDT)
-            let (nemotron_tx, nemotron_rx) = bounded(8); // ok to drop streaming chunks
-            let (tdt_tx, tdt_rx) = crossbeam_channel::unbounded(); // never drop utterances
+            // 5. Create channels — Nemotron disabled until empty-text issue is resolved
+            let (nemotron_tx, _nemotron_rx) = bounded(8);
+            let (tdt_tx, tdt_rx) = crossbeam_channel::unbounded();
             NEMOTRON_TX.set(nemotron_tx).ok();
             TDT_TX.set(tdt_tx).ok();
             CAPTURE_HANDLE.set(Mutex::new(None)).ok();
 
-            // 6. Spawn ASR threads (separate for streaming vs refinement)
-            asr::spawn_nemotron_thread(nemotron_rx, app.handle().clone());
+            // 6. Spawn TDT thread only — Nemotron disabled (returns empty text, needs investigation)
+            // TODO: investigate Nemotron empty output — possibly cache-aware state issue or API mismatch
+            // asr::spawn_nemotron_thread(nemotron_rx, app.handle().clone());
             asr::spawn_tdt_thread(tdt_rx, app.handle().clone());
 
             // 7. System tray

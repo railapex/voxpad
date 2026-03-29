@@ -161,11 +161,12 @@ pub fn warmup_tdt() -> Result<(), String> {
 pub fn preload(models_dir: &Path) {
     log::info!("[asr] preloading models from {}", models_dir.display());
 
-    if let Err(e) = init_nemotron(models_dir) {
-        log::error!("[asr] Nemotron init: {e}");
-    } else if let Err(e) = warmup_nemotron() {
-        log::warn!("[asr] Nemotron warmup: {e}");
-    }
+    // Nemotron disabled — returns empty text on every chunk. Needs investigation.
+    // if let Err(e) = init_nemotron(models_dir) {
+    //     log::error!("[asr] Nemotron init: {e}");
+    // } else if let Err(e) = warmup_nemotron() {
+    //     log::warn!("[asr] Nemotron warmup: {e}");
+    // }
 
     if let Err(e) = init_tdt(models_dir) {
         log::error!("[asr] TDT init: {e}");
