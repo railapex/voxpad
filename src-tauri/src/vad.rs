@@ -52,7 +52,7 @@ impl SileroVad {
             session,
             state: vec![0.0f32; STATE_SIZE],
             threshold,
-            min_silence_frames: 10, // ~320ms at 32ms/frame
+            min_silence_frames: 25, // ~800ms at 32ms/frame — dictation needs longer pauses
             min_speech_frames: 3,   // ~96ms at 32ms/frame
             speech_frames: 0,
             silence_frames: 0,

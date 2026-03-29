@@ -6,7 +6,6 @@
 // Both models share the same ort CUDA context (initialized once via ort::init()).
 // Natural GPU time-slicing: Nemotron runs during speech, TDT runs during silence.
 
-use crate::audio::AudioEvent;
 use crate::rules;
 use crossbeam_channel::Receiver;
 use std::path::Path;
@@ -191,36 +190,41 @@ pub fn is_ready() -> bool {
 // ASR event processing loop
 // ---------------------------------------------------------------------------
 
-/// Process audio events from the capture pipeline.
-/// Runs on a dedicated thread. Routes NemotronChunks and TdtUtterances
-/// to the appropriate model, emits results as Tauri events.
-pub fn spawn_event_processor(
-    event_rx: Receiver<AudioEvent>,
+/// Spawn the Nemotron streaming thread.
+/// Receives 560ms audio chunks, produces streaming text.
+pub fn spawn_nemotron_thread(
+    rx: Receiver<Vec<f32>>,
     app_handle: tauri::AppHandle,
 ) {
     std::thread::Builder::new()
-        .name("voxpad-asr".into())
+        .name("voxpad-nemotron".into())
         .spawn(move || {
             let mut utterance_id: u64 = 0;
-
-            for event in event_rx {
-                match event {
-                    AudioEvent::NemotronChunk(chunk) => {
-                        process_nemotron_chunk(&chunk, utterance_id, &app_handle);
-                    }
-                    AudioEvent::TdtUtterance(audio) => {
-                        utterance_id += 1;
-                        process_tdt_utterance(audio, utterance_id, &app_handle);
-                    }
-                    AudioEvent::VadEvent(_) => {
-                        // VAD events already emitted by audio.rs — no ASR action needed
-                    }
-                }
+            for chunk in rx {
+                process_nemotron_chunk(&chunk, utterance_id, &app_handle);
             }
-
-            log::info!("[asr] event processor ended");
+            log::info!("[asr] nemotron thread ended");
         })
-        .expect("spawn ASR event processor");
+        .expect("spawn Nemotron thread");
+}
+
+/// Spawn the TDT refinement thread.
+/// Receives complete utterance audio, produces refined text + timestamps.
+pub fn spawn_tdt_thread(
+    rx: Receiver<Vec<f32>>,
+    app_handle: tauri::AppHandle,
+) {
+    std::thread::Builder::new()
+        .name("voxpad-tdt".into())
+        .spawn(move || {
+            let mut utterance_id: u64 = 0;
+            for audio in rx {
+                utterance_id += 1;
+                process_tdt_utterance(audio, utterance_id, &app_handle);
+            }
+            log::info!("[asr] tdt thread ended");
+        })
+        .expect("spawn TDT thread");
 }
 
 fn process_nemotron_chunk(chunk: &[f32], utterance_id: u64, app: &tauri::AppHandle) {

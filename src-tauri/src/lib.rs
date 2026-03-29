@@ -14,8 +14,9 @@ mod vad;
 use crossbeam_channel::bounded;
 use std::sync::{Mutex, OnceLock};
 
-// Global channels for audio→ASR pipeline
-static AUDIO_TX: OnceLock<crossbeam_channel::Sender<audio::AudioEvent>> = OnceLock::new();
+// Global channels for audio→ASR pipeline (separate for streaming vs refinement)
+static NEMOTRON_TX: OnceLock<crossbeam_channel::Sender<Vec<f32>>> = OnceLock::new();
+static TDT_TX: OnceLock<crossbeam_channel::Sender<Vec<f32>>> = OnceLock::new();
 static CAPTURE_HANDLE: OnceLock<Mutex<Option<audio::CaptureHandle>>> = OnceLock::new();
 
 pub fn run() {
@@ -47,14 +48,16 @@ pub fn run() {
             // 4. Initialize ORT environment (once, shared by all models)
             ort::init().commit();
 
-            // 5. Create audio→ASR channels
-            let (audio_tx, audio_rx) = bounded(16);
-            AUDIO_TX.set(audio_tx).ok();
+            // 5. Create separate channels for streaming (Nemotron) and refinement (TDT)
+            let (nemotron_tx, nemotron_rx) = bounded(8); // ok to drop streaming chunks
+            let (tdt_tx, tdt_rx) = crossbeam_channel::unbounded(); // never drop utterances
+            NEMOTRON_TX.set(nemotron_tx).ok();
+            TDT_TX.set(tdt_tx).ok();
             CAPTURE_HANDLE.set(Mutex::new(None)).ok();
 
-            // 6. Spawn ASR event processor thread
-            let app_handle = app.handle().clone();
-            asr::spawn_event_processor(audio_rx, app_handle);
+            // 6. Spawn ASR threads (separate for streaming vs refinement)
+            asr::spawn_nemotron_thread(nemotron_rx, app.handle().clone());
+            asr::spawn_tdt_thread(tdt_rx, app.handle().clone());
 
             // 7. System tray
             setup_tray(app)?;
@@ -199,10 +202,17 @@ fn on_hotkey_released(app: &tauri::AppHandle, hold_threshold_ms: u64) {
 // ---------------------------------------------------------------------------
 
 fn start_recording(app: &tauri::AppHandle) {
-    let tx = match AUDIO_TX.get() {
+    let nemotron_tx = match NEMOTRON_TX.get() {
         Some(tx) => tx.clone(),
         None => {
-            log::error!("[voxpad] audio channel not initialized");
+            log::error!("[voxpad] nemotron channel not initialized");
+            return;
+        }
+    };
+    let tdt_tx = match TDT_TX.get() {
+        Some(tx) => tx.clone(),
+        None => {
+            log::error!("[voxpad] tdt channel not initialized");
             return;
         }
     };
@@ -218,10 +228,15 @@ fn start_recording(app: &tauri::AppHandle) {
     let mic_device = config::get().mic_device;
     let app_clone = app.clone();
 
+    let channels = audio::AsrChannels {
+        nemotron_tx,
+        tdt_tx,
+    };
+
     std::thread::spawn(move || {
         match audio::start_capture(
             mic_device.as_deref(),
-            tx,
+            channels,
             &vad_path,
             app_clone,
         ) {

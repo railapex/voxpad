@@ -23,15 +23,12 @@ const TARGET_SAMPLE_RATE: u32 = 16000;
 const NEMOTRON_CHUNK_SAMPLES: usize = 8960; // 560ms at 16kHz
 const VAD_FRAME_SAMPLES: usize = 512; // 32ms at 16kHz
 
-/// Messages sent from the audio pipeline to consumers.
-#[derive(Debug)]
-pub enum AudioEvent {
-    /// 560ms chunk for Nemotron streaming ASR
-    NemotronChunk(Vec<f32>),
-    /// Complete utterance for TDT refinement
-    TdtUtterance(Vec<f32>),
-    /// VAD state change
-    VadEvent(VadEvent),
+/// Channels for the two ASR passes — separate so they don't block each other.
+pub struct AsrChannels {
+    /// 560ms chunks for Nemotron streaming (bounded, ok to drop)
+    pub nemotron_tx: Sender<Vec<f32>>,
+    /// Complete utterances for TDT refinement (unbounded, never drop)
+    pub tdt_tx: Sender<Vec<f32>>,
 }
 
 #[derive(Debug, Clone)]
@@ -92,7 +89,7 @@ pub fn enumerate_devices() -> Vec<DeviceInfo> {
 /// `vad_model_path` points to the Silero VAD ONNX model file.
 pub fn start_capture(
     device_name: Option<&str>,
-    event_tx: Sender<AudioEvent>,
+    channels: AsrChannels,
     vad_model_path: &Path,
     app_handle: tauri::AppHandle,
 ) -> Result<CaptureHandle, String> {
@@ -193,7 +190,7 @@ pub fn start_capture(
         .name("voxpad-audio-proc".into())
         .spawn(move || {
             if let Err(e) =
-                processing_loop(raw_rx, event_tx, &vad_path, native_rate, stop_clone, app_handle)
+                processing_loop(raw_rx, channels, &vad_path, native_rate, stop_clone, app_handle)
             {
                 log::error!("[audio] processing thread error: {e}");
             }
@@ -209,7 +206,7 @@ pub fn start_capture(
 /// Main processing loop — resample, VAD, dispatch to ASR.
 fn processing_loop(
     raw_rx: Receiver<Vec<f32>>,
-    event_tx: Sender<AudioEvent>,
+    channels: AsrChannels,
     vad_model_path: &Path,
     native_rate: u32,
     stop: Arc<AtomicBool>,
@@ -263,8 +260,6 @@ fn processing_loop(
                         VadEvent::SpeechStart => {
                             log::debug!("[audio] speech start");
                             app_handle.emit("vad-speech-start", ()).ok();
-                            let _ = event_tx.try_send(AudioEvent::VadEvent(VadEvent::SpeechStart));
-                            // Include this frame in the utterance
                             utterance_audio.extend_from_slice(&frame);
                             nemotron_chunk_buf.extend_from_slice(&frame);
                         }
@@ -272,11 +267,11 @@ fn processing_loop(
                             utterance_audio.extend_from_slice(&frame);
                             nemotron_chunk_buf.extend_from_slice(&frame);
 
-                            // Dispatch 560ms chunks to Nemotron
+                            // Dispatch 560ms chunks to Nemotron (ok to drop — streaming)
                             while nemotron_chunk_buf.len() >= NEMOTRON_CHUNK_SAMPLES {
                                 let chunk: Vec<f32> =
                                     nemotron_chunk_buf.drain(..NEMOTRON_CHUNK_SAMPLES).collect();
-                                let _ = event_tx.try_send(AudioEvent::NemotronChunk(chunk));
+                                let _ = channels.nemotron_tx.try_send(chunk);
                             }
 
                             // Cap utterance at 60 seconds
@@ -285,7 +280,7 @@ fn processing_loop(
                                 flush_utterance(
                                     &mut utterance_audio,
                                     &mut nemotron_chunk_buf,
-                                    &event_tx,
+                                    &channels,
                                     &app_handle,
                                 );
                                 vad.reset();
@@ -299,13 +294,11 @@ fn processing_loop(
                             flush_utterance(
                                 &mut utterance_audio,
                                 &mut nemotron_chunk_buf,
-                                &event_tx,
+                                &channels,
                                 &app_handle,
                             );
                         }
-                        VadEvent::Silence => {
-                            // Nothing to do
-                        }
+                        VadEvent::Silence => {}
                     }
                 }
                 Err(e) => {
@@ -323,28 +316,27 @@ fn processing_loop(
 fn flush_utterance(
     utterance_audio: &mut Vec<f32>,
     nemotron_chunk_buf: &mut Vec<f32>,
-    event_tx: &Sender<AudioEvent>,
+    channels: &AsrChannels,
     app_handle: &tauri::AppHandle,
 ) {
-    // Send remaining partial Nemotron chunk (padded with silence if needed)
+    // Send remaining partial Nemotron chunk (padded)
     if !nemotron_chunk_buf.is_empty() {
-        // Pad to full chunk size for Nemotron
         nemotron_chunk_buf.resize(NEMOTRON_CHUNK_SAMPLES, 0.0);
-        let _ = event_tx.try_send(AudioEvent::NemotronChunk(nemotron_chunk_buf.clone()));
+        let _ = channels.nemotron_tx.try_send(nemotron_chunk_buf.clone());
         nemotron_chunk_buf.clear();
     }
 
-    // Send complete utterance to TDT
-    let min_utterance_samples = (TARGET_SAMPLE_RATE as f64 * 0.2) as usize; // 200ms min
+    // Send complete utterance to TDT — use send() not try_send(), never drop utterances
+    let min_utterance_samples = (TARGET_SAMPLE_RATE as f64 * 0.3) as usize; // 300ms min
     if utterance_audio.len() >= min_utterance_samples {
         let utterance = std::mem::take(utterance_audio);
-        let _ = event_tx.try_send(AudioEvent::TdtUtterance(utterance));
+        log::debug!("[audio] sending {:.1}s utterance to TDT", utterance.len() as f64 / TARGET_SAMPLE_RATE as f64);
+        let _ = channels.tdt_tx.send(utterance); // blocking send — TDT is important
     } else {
         utterance_audio.clear();
     }
 
     app_handle.emit("vad-speech-end", ()).ok();
-    let _ = event_tx.try_send(AudioEvent::VadEvent(VadEvent::SpeechEnd));
 }
 
 /// Simple linear interpolation resampler.
