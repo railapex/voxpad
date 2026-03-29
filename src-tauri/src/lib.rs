@@ -5,8 +5,8 @@ mod asr;
 mod audio;
 mod buffer;
 mod config;
-// mod download;  // Phase 5
-// mod history;   // Phase 5
+mod download;
+mod history;
 mod platform;
 mod rules;
 mod vad;
@@ -36,7 +36,12 @@ pub fn run() {
             log::info!("[voxpad] started, data_dir={}", data_dir.display());
             log::info!("[voxpad] hotkey={}, hold_threshold={}ms", cfg.hotkey, cfg.hold_threshold_ms);
 
-            // 2. Buffer state
+            // 2. History DB
+            if let Err(e) = history::init(&data_dir) {
+                log::error!("[voxpad] history init: {e}");
+            }
+
+            // 3. Buffer state
             buffer::init();
 
             // 3. Initialize ORT environment (once, shared by all models)
@@ -87,6 +92,11 @@ pub fn run() {
             dismiss_buffer,
             get_buffer_text,
             set_buffer_text,
+            check_models,
+            download_models,
+            cancel_download,
+            get_history,
+            search_history,
         ])
         .run(tauri::generate_context!())
         .expect("error running voxpad");
@@ -316,4 +326,36 @@ fn get_buffer_text() -> String {
 #[tauri::command]
 fn set_buffer_text(text: String) {
     buffer::set_text(text);
+}
+
+/// Check which models need downloading.
+#[tauri::command]
+fn check_models(app: tauri::AppHandle) -> Vec<download::MissingModel> {
+    let data_dir = app.path().app_data_dir().unwrap_or_default();
+    download::check_models(&data_dir)
+}
+
+/// Download missing models.
+#[tauri::command]
+async fn download_models(app: tauri::AppHandle) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().unwrap_or_default();
+    download::download_models(data_dir, app.clone()).await
+}
+
+/// Cancel an in-progress download.
+#[tauri::command]
+fn cancel_download() {
+    download::cancel();
+}
+
+/// Get recent history entries.
+#[tauri::command]
+fn get_history(limit: Option<u32>, offset: Option<u32>) -> Result<Vec<history::HistoryEntry>, String> {
+    history::query_recent(limit.unwrap_or(50), offset.unwrap_or(0))
+}
+
+/// Search history via FTS5.
+#[tauri::command]
+fn search_history(query: String, limit: Option<u32>) -> Result<Vec<history::HistoryEntry>, String> {
+    history::search(&query, limit.unwrap_or(50))
 }
