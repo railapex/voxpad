@@ -241,9 +241,22 @@ fn process_nemotron_chunk(chunk: &[f32], utterance_id: u64, app: &tauri::AppHand
             if !cleaned.is_empty() {
                 // Check if it's a command
                 if let Some(cmd) = rules::detect_command(&cleaned) {
+                    // Execute command on backend buffer
+                    match cmd {
+                        rules::BufferCommand::ScratchLast => {
+                            crate::buffer::scratch_last();
+                        }
+                        rules::BufferCommand::ClearAll => {
+                            crate::buffer::clear();
+                        }
+                    }
+                    // Notify frontend to sync
                     app.emit(
                         "buffer-command",
-                        serde_json::json!({ "command": format!("{:?}", cmd) }),
+                        serde_json::json!({
+                            "command": format!("{:?}", cmd),
+                            "text": crate::buffer::get_text(),
+                        }),
                     )
                     .ok();
                 } else {
@@ -252,6 +265,9 @@ fn process_nemotron_chunk(chunk: &[f32], utterance_id: u64, app: &tauri::AppHand
                         t0.elapsed(),
                         &cleaned
                     );
+                    // Update backend buffer state (for quick mode insertion)
+                    crate::buffer::append_text(&cleaned);
+                    // Update frontend display
                     app.emit(
                         "streaming-text",
                         serde_json::json!({

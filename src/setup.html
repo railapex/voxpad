@@ -154,12 +154,16 @@
         downloadSize.textContent = `${dlMB} / ${totalMB} MB`;
       });
 
-      listen('download-complete', () => {
+      listen('download-complete', async () => {
+        downloadName.textContent = 'Loading models...';
+        downloadSize.textContent = 'This may take a minute on first run';
+        // Trigger model preload after download
+        await invoke('preload_models');
         document.getElementById('step-download').classList.remove('active');
         document.getElementById('step-ready').classList.add('active');
       });
 
-      invoke('download_models').catch(err => {
+      invoke('download_models_cmd').catch(err => {
         downloadName.textContent = `Error: ${err}`;
         downloadSize.textContent = '';
       });

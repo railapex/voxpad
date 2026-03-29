@@ -44,45 +44,46 @@ pub fn run() {
             // 3. Buffer state
             buffer::init();
 
-            // 3. Initialize ORT environment (once, shared by all models)
-            // ort::init().commit() returns bool in ort v2
+            // 4. Initialize ORT environment (once, shared by all models)
             ort::init().commit();
 
-            // 4. Create audio→ASR channels
+            // 5. Create audio→ASR channels
             let (audio_tx, audio_rx) = bounded(16);
             AUDIO_TX.set(audio_tx).ok();
             CAPTURE_HANDLE.set(Mutex::new(None)).ok();
 
-            // 5. Spawn ASR event processor thread
+            // 6. Spawn ASR event processor thread
             let app_handle = app.handle().clone();
             asr::spawn_event_processor(audio_rx, app_handle);
-
-            // 6. Background model preload
-            {
-                let models_dir = data_dir.join("models");
-                std::thread::Builder::new()
-                    .name("voxpad-preload".into())
-                    .spawn(move || {
-                        if models_dir.join("nemotron").exists()
-                            && models_dir.join("tdt").exists()
-                            && models_dir.join("silero_vad.onnx").exists()
-                        {
-                            asr::preload(&models_dir);
-                        } else {
-                            log::info!(
-                                "[voxpad] models not found at {} — first-run download needed",
-                                models_dir.display()
-                            );
-                        }
-                    })
-                    .ok();
-            }
 
             // 7. System tray
             setup_tray(app)?;
 
             // 8. Register global hotkey
             register_hotkey(app.handle(), &cfg.hotkey)?;
+
+            // 9. Check models and either preload or show setup wizard
+            let models_dir = data_dir.join("models");
+            let missing = download::check_models(&data_dir);
+            if missing.is_empty() {
+                // All models present — preload in background
+                log::info!("[voxpad] all models found, preloading...");
+                let dir = models_dir.clone();
+                std::thread::Builder::new()
+                    .name("voxpad-preload".into())
+                    .spawn(move || {
+                        asr::preload(&dir);
+                    })
+                    .ok();
+            } else {
+                // First run — show setup wizard for model download
+                log::info!(
+                    "[voxpad] {} model files missing, showing setup wizard",
+                    missing.len()
+                );
+                let app_handle = app.handle().clone();
+                open_setup_window(&app_handle);
+            }
 
             Ok(())
         })
@@ -93,8 +94,9 @@ pub fn run() {
             get_buffer_text,
             set_buffer_text,
             check_models,
-            download_models,
+            download_models_cmd,
             cancel_download,
+            preload_models,
             get_history,
             search_history,
         ])
@@ -131,6 +133,18 @@ fn register_hotkey(
 }
 
 fn on_hotkey_pressed(app: &tauri::AppHandle) {
+    // Don't allow hotkey if models aren't loaded yet
+    if !asr::is_ready() {
+        log::warn!("[voxpad] models not loaded yet, ignoring hotkey");
+        // Show the main window briefly with a "loading" message
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+        app.emit("models-loading", ()).ok();
+        return;
+    }
+
     let mode_before = buffer::get_mode();
     let _captured = buffer::on_hotkey_pressed();
 
@@ -139,7 +153,7 @@ fn on_hotkey_pressed(app: &tauri::AppHandle) {
             // Show window and start recording immediately
             show_buffer_window(app);
             start_recording(app);
-            app.emit("enter-quick-mode", ()).ok(); // will switch to buffer on tap
+            app.emit("enter-quick-mode", ()).ok();
         }
         buffer::Mode::BufferActive => {
             // Toggle off — stop recording and hide
@@ -151,6 +165,10 @@ fn on_hotkey_pressed(app: &tauri::AppHandle) {
 }
 
 fn on_hotkey_released(app: &tauri::AppHandle, hold_threshold_ms: u64) {
+    if !asr::is_ready() {
+        return;
+    }
+
     match buffer::on_hotkey_released(hold_threshold_ms) {
         buffer::HotkeyAction::EnterBufferMode => {
             // Was a tap — switch from quick mode visual to buffer mode
@@ -162,9 +180,7 @@ fn on_hotkey_released(app: &tauri::AppHandle, hold_threshold_ms: u64) {
             stop_recording();
             hide_buffer_window(app);
             if !text.trim().is_empty() {
-                let target_ref = target.as_ref();
                 std::thread::spawn(move || {
-                    // Small delay for window hide to complete
                     std::thread::sleep(std::time::Duration::from_millis(50));
                     platform::inject_text(&text, target.as_ref());
                 });
@@ -193,10 +209,15 @@ fn start_recording(app: &tauri::AppHandle) {
 
     let data_dir = app.path().app_data_dir().unwrap_or_default();
     let vad_path = data_dir.join("models/silero_vad.onnx");
+
+    if !vad_path.exists() {
+        log::error!("[voxpad] VAD model not found at {}", vad_path.display());
+        return;
+    }
+
     let mic_device = config::get().mic_device;
     let app_clone = app.clone();
 
-    // Start capture on a new thread to avoid blocking
     std::thread::spawn(move || {
         match audio::start_capture(
             mic_device.as_deref(),
@@ -222,8 +243,10 @@ fn start_recording(app: &tauri::AppHandle) {
 fn stop_recording() {
     if let Some(capture) = CAPTURE_HANDLE.get() {
         if let Ok(mut lock) = capture.lock() {
-            *lock = None; // Drop the handle → stops capture
-            log::info!("[voxpad] recording stopped");
+            if lock.is_some() {
+                *lock = None; // Drop the handle → stops capture
+                log::info!("[voxpad] recording stopped");
+            }
         }
     }
 }
@@ -241,7 +264,20 @@ fn show_buffer_window(app: &tauri::AppHandle) {
 
 fn hide_buffer_window(app: &tauri::AppHandle) {
     app.emit("hide-buffer", ()).ok();
-    // Frontend handles the CSS animation, then calls window.hide()
+}
+
+fn open_setup_window(app: &tauri::AppHandle) {
+    use tauri::WebviewWindowBuilder;
+    match WebviewWindowBuilder::new(app, "setup", tauri::WebviewUrl::App("setup.html".into()))
+        .title("VoxPad Setup")
+        .inner_size(450.0, 350.0)
+        .resizable(false)
+        .center()
+        .build()
+    {
+        Ok(_) => log::info!("[voxpad] setup window opened"),
+        Err(e) => log::error!("[voxpad] failed to open setup window: {e}"),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -265,7 +301,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .on_menu_event(|app, event| match event.id().as_ref() {
             "settings" => {
                 log::info!("[tray] settings clicked");
-                // TODO Phase 6: open settings window
+                // TODO: open settings window (same pattern as setup)
             }
             "quit" => {
                 log::info!("[tray] quit");
@@ -291,8 +327,6 @@ fn get_config() -> config::Config {
 #[tauri::command]
 fn insert_buffer_text(text: String, app: tauri::AppHandle) {
     log::info!("[cmd] insert_buffer_text ({} chars)", text.len());
-
-    // Update buffer with the latest text from frontend (may have been edited)
     buffer::set_text(text.clone());
     let final_text = buffer::insert_at_foreground();
 
@@ -302,7 +336,7 @@ fn insert_buffer_text(text: String, app: tauri::AppHandle) {
     if !final_text.trim().is_empty() {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(100));
-            platform::inject_text(&final_text, None); // None = inject at current foreground
+            platform::inject_text(&final_text, None);
         });
     }
 }
@@ -316,13 +350,11 @@ fn dismiss_buffer(app: tauri::AppHandle) {
     hide_buffer_window(&app);
 }
 
-/// Get the current buffer text.
 #[tauri::command]
 fn get_buffer_text() -> String {
     buffer::get_text()
 }
 
-/// Set the buffer text (sync from frontend after user edits).
 #[tauri::command]
 fn set_buffer_text(text: String) {
     buffer::set_text(text);
@@ -337,7 +369,7 @@ fn check_models(app: tauri::AppHandle) -> Vec<download::MissingModel> {
 
 /// Download missing models.
 #[tauri::command]
-async fn download_models(app: tauri::AppHandle) -> Result<(), String> {
+async fn download_models_cmd(app: tauri::AppHandle) -> Result<(), String> {
     let data_dir = app.path().app_data_dir().unwrap_or_default();
     download::download_models(data_dir, app.clone()).await
 }
@@ -346,6 +378,20 @@ async fn download_models(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn cancel_download() {
     download::cancel();
+}
+
+/// Trigger model preload after download completes.
+#[tauri::command]
+fn preload_models(app: tauri::AppHandle) {
+    let data_dir = app.path().app_data_dir().unwrap_or_default();
+    let models_dir = data_dir.join("models");
+    std::thread::Builder::new()
+        .name("voxpad-preload".into())
+        .spawn(move || {
+            asr::preload(&models_dir);
+            log::info!("[voxpad] models preloaded, ready for use");
+        })
+        .ok();
 }
 
 /// Get recent history entries.

@@ -53,6 +53,18 @@ async function initEvents() {
       // Nemotron streaming output is punctuated and good enough for display.
     });
 
+    listen('buffer-command', (event) => {
+      // Backend executed command (scratch/clear) — sync text from backend
+      const { text } = event.payload;
+      textarea.value = text || '';
+      updateWordCount();
+    });
+
+    listen('models-loading', () => {
+      textarea.value = '';
+      textarea.placeholder = 'Models are still loading... try again in a moment.';
+    });
+
     listen('vad-speech-start', () => {
       recordingDot.classList.add('recording');
     });
