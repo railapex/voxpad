@@ -2,7 +2,7 @@
 
 async function init() {
   try {
-    const { invoke } = await import('@tauri-apps/api/core');
+    const { invoke } = window.__TAURI__.core;
 
     // Load current config
     const config = await invoke('get_config');

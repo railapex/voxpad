@@ -21,18 +21,8 @@
       width: 100%;
     }
 
-    h1 {
-      font-size: 24px;
-      font-weight: 700;
-      margin-bottom: 4px;
-    }
-
-    .tagline {
-      color: var(--text-dim);
-      font-size: 14px;
-      margin-bottom: 28px;
-    }
-
+    h1 { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+    .tagline { color: var(--text-dim); font-size: 14px; margin-bottom: 28px; }
     .step { display: none; }
     .step.active { display: block; }
 
@@ -69,30 +59,10 @@
       width: 0%;
     }
 
-    .status-line {
-      font-size: 12px;
-      color: var(--text-dim);
-      margin: 4px 0;
-    }
-
-    .error-line {
-      font-size: 12px;
-      color: #ef4444;
-      margin: 8px 0;
-      word-break: break-all;
-    }
-
-    .total-size {
-      font-size: 13px;
-      color: var(--text);
-      margin-bottom: 12px;
-    }
-
-    .ready-check {
-      font-size: 48px;
-      color: #22c55e;
-      margin-bottom: 12px;
-    }
+    .status-line { font-size: 12px; color: var(--text-dim); margin: 4px 0; }
+    .error-line { font-size: 12px; color: #ef4444; margin: 8px 0; word-break: break-all; display: none; }
+    .total-size { font-size: 13px; color: var(--text); margin-bottom: 12px; }
+    .ready-check { font-size: 48px; color: #22c55e; margin-bottom: 12px; }
 
     .hotkey-display {
       display: inline-block;
@@ -124,7 +94,6 @@
     <h1>VoxPad</h1>
     <p class="tagline">See what you're saying.</p>
 
-    <!-- Step 1: Download -->
     <div id="step-download" class="step active">
       <p class="total-size" id="total-size">Checking models...</p>
       <div id="model-list" class="model-list"></div>
@@ -132,10 +101,9 @@
         <div id="progress-bar" class="progress-bar"></div>
       </div>
       <p id="status-line" class="status-line"></p>
-      <p id="error-line" class="error-line" style="display:none"></p>
+      <p id="error-line" class="error-line"></p>
     </div>
 
-    <!-- Step 2: Ready -->
     <div id="step-ready" class="step">
       <p class="ready-check">&#10003;</p>
       <p>Ready to go!</p>
@@ -147,20 +115,11 @@
     </div>
   </div>
 
-  <script type="module">
-    let invoke, listen, getCurrentWindow;
-    try {
-      const core = await import('@tauri-apps/api/core');
-      const event = await import('@tauri-apps/api/event');
-      const win = await import('@tauri-apps/api/window');
-      invoke = core.invoke;
-      listen = event.listen;
-      getCurrentWindow = win.getCurrentWindow;
-    } catch (err) {
-      document.getElementById('error-line').textContent = `API load failed: ${err}`;
-      document.getElementById('error-line').style.display = 'block';
-      throw err;
-    }
+  <script>
+    // Use window.__TAURI__ globals (withGlobalTauri: true in tauri.conf.json)
+    const { invoke } = window.__TAURI__.core;
+    const { listen } = window.__TAURI__.event;
+    const { getCurrentWindow } = window.__TAURI__.window;
 
     const progressBar = document.getElementById('progress-bar');
     const statusLine = document.getElementById('status-line');
@@ -169,53 +128,55 @@
     const modelListEl = document.getElementById('model-list');
 
     function formatBytes(bytes) {
-      if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
-      if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(0)} MB`;
-      if (bytes >= 1e3) return `${(bytes / 1e3).toFixed(0)} KB`;
-      return `${bytes} B`;
+      if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB';
+      if (bytes >= 1e6) return (bytes / 1e6).toFixed(0) + ' MB';
+      if (bytes >= 1e3) return (bytes / 1e3).toFixed(0) + ' KB';
+      return bytes + ' B';
     }
 
-    try {
-      // Check what needs downloading
-      const missing = await invoke('check_models');
-      console.log('[setup] missing models:', missing);
+    async function run() {
+      try {
+        const missing = await invoke('check_models');
+        console.log('[setup] missing models:', missing);
 
-      if (missing.length === 0) {
-        document.getElementById('step-download').classList.remove('active');
-        document.getElementById('step-ready').classList.add('active');
-      } else {
+        if (missing.length === 0) {
+          document.getElementById('step-download').classList.remove('active');
+          document.getElementById('step-ready').classList.add('active');
+          return;
+        }
+
         // Show model list and total size
         const totalBytes = missing.reduce((sum, m) => sum + m.size_bytes, 0);
-        totalSizeEl.textContent = `Downloading ${missing.length} files (${formatBytes(totalBytes)})`;
+        totalSizeEl.textContent = 'Downloading ' + missing.length + ' files (' + formatBytes(totalBytes) + ')';
 
-        // Build model list
-        modelListEl.innerHTML = missing.map(m =>
-          `<div class="model-item" id="model-${m.name.replace(/\s/g, '-')}">
-            <span>${m.name}</span>
-            <span>${formatBytes(m.size_bytes)}</span>
-          </div>`
-        ).join('');
+        modelListEl.innerHTML = missing.map(function(m) {
+          var id = 'model-' + m.name.replace(/\s/g, '-');
+          return '<div class="model-item" id="' + id + '">' +
+            '<span>' + m.name + '</span>' +
+            '<span>' + formatBytes(m.size_bytes) + '</span>' +
+            '</div>';
+        }).join('');
 
         // Listen for progress
-        await listen('download-progress', (event) => {
-          const { name, bytes_downloaded, bytes_total, overall_bytes_downloaded, overall_bytes_total } = event.payload;
-          const pct = overall_bytes_total > 0 ? (overall_bytes_downloaded / overall_bytes_total * 100) : 0;
-          progressBar.style.width = `${Math.min(pct, 100)}%`;
-          statusLine.textContent = `${name}: ${formatBytes(bytes_downloaded)} / ${formatBytes(bytes_total)} — ${pct.toFixed(0)}% overall`;
+        await listen('download-progress', function(event) {
+          var d = event.payload;
+          var pct = d.overall_bytes_total > 0 ? (d.overall_bytes_downloaded / d.overall_bytes_total * 100) : 0;
+          progressBar.style.width = Math.min(pct, 100) + '%';
+          statusLine.textContent = d.name + ': ' + formatBytes(d.bytes_downloaded) + ' / ' + formatBytes(d.bytes_total) + ' — ' + pct.toFixed(0) + '% overall';
 
-          // Update model list styling
-          document.querySelectorAll('.model-item').forEach(el => el.classList.remove('active'));
-          const activeEl = document.getElementById(`model-${name.replace(/\s/g, '-')}`);
+          // Highlight active model
+          document.querySelectorAll('.model-item').forEach(function(el) { el.classList.remove('active'); });
+          var activeEl = document.getElementById('model-' + d.name.replace(/\s/g, '-'));
           if (activeEl) activeEl.classList.add('active');
         });
 
-        await listen('download-complete', async () => {
+        await listen('download-complete', async function() {
           statusLine.textContent = 'Loading models into GPU...';
           progressBar.style.width = '100%';
           try {
             await invoke('preload_models');
           } catch (err) {
-            console.warn('[setup] preload error (non-fatal):', err);
+            console.warn('[setup] preload note:', err);
           }
           document.getElementById('step-download').classList.remove('active');
           document.getElementById('step-ready').classList.add('active');
@@ -223,22 +184,19 @@
 
         // Start download
         statusLine.textContent = 'Starting download...';
-        try {
-          await invoke('download_models_cmd');
-        } catch (err) {
-          console.error('[setup] download error:', err);
-          errorLine.textContent = `Download failed: ${err}`;
-          errorLine.style.display = 'block';
-          statusLine.textContent = 'Download failed — check your internet connection and try again.';
-        }
+        await invoke('download_models_cmd');
+
+      } catch (err) {
+        console.error('[setup] error:', err);
+        errorLine.textContent = 'Error: ' + err;
+        errorLine.style.display = 'block';
+        statusLine.textContent = 'Something went wrong — check the console.';
       }
-    } catch (err) {
-      console.error('[setup] init error:', err);
-      errorLine.textContent = `Setup error: ${err}`;
-      errorLine.style.display = 'block';
     }
 
-    document.getElementById('btn-start').addEventListener('click', async () => {
+    run();
+
+    document.getElementById('btn-start').addEventListener('click', async function() {
       await getCurrentWindow().close();
     });
   </script>
