@@ -199,17 +199,19 @@ pub fn spawn_nemotron_thread(
     std::thread::Builder::new()
         .name("voxpad-nemotron".into())
         .spawn(move || {
-            let mut utterance_id: u64 = 0;
+            log::info!("[asr] nemotron thread started, waiting for chunks...");
+            let mut chunk_count: u64 = 0;
             for chunk in rx {
-                process_nemotron_chunk(&chunk, utterance_id, &app_handle);
+                chunk_count += 1;
+                log::debug!("[asr/nemotron] processing chunk #{} ({} samples)", chunk_count, chunk.len());
+                process_nemotron_chunk(&chunk, chunk_count, &app_handle);
             }
-            log::info!("[asr] nemotron thread ended");
+            log::info!("[asr] nemotron thread ended after {} chunks", chunk_count);
         })
         .expect("spawn Nemotron thread");
 }
 
 /// Spawn the TDT refinement thread.
-/// Receives complete utterance audio, produces refined text + timestamps.
 pub fn spawn_tdt_thread(
     rx: Receiver<Vec<f32>>,
     app_handle: tauri::AppHandle,
@@ -217,26 +219,28 @@ pub fn spawn_tdt_thread(
     std::thread::Builder::new()
         .name("voxpad-tdt".into())
         .spawn(move || {
+            log::info!("[asr] tdt thread started, waiting for utterances...");
             let mut utterance_id: u64 = 0;
             for audio in rx {
                 utterance_id += 1;
+                log::info!("[asr/tdt] received utterance #{} ({:.1}s)", utterance_id, audio.len() as f64 / 16000.0);
                 process_tdt_utterance(audio, utterance_id, &app_handle);
             }
-            log::info!("[asr] tdt thread ended");
+            log::info!("[asr] tdt thread ended after {} utterances", utterance_id);
         })
         .expect("spawn TDT thread");
 }
 
-fn process_nemotron_chunk(chunk: &[f32], utterance_id: u64, app: &tauri::AppHandle) {
+fn process_nemotron_chunk(chunk: &[f32], chunk_id: u64, app: &tauri::AppHandle) {
     let state = match NEMOTRON.get().and_then(|r| r.as_ref().ok()) {
         Some(s) => s,
-        None => return, // not loaded yet
+        None => {
+            log::warn!("[asr/nemotron] model not loaded, skipping chunk #{}", chunk_id);
+            return;
+        }
     };
 
-    let mut lock = match state.try_lock() {
-        Ok(l) => l,
-        Err(_) => return, // busy (shouldn't happen in normal flow)
-    };
+    let mut lock = state.lock().unwrap(); // dedicated thread, no contention
 
     let t0 = std::time::Instant::now();
     match lock.model.transcribe_chunk(chunk) {
@@ -276,7 +280,7 @@ fn process_nemotron_chunk(chunk: &[f32], utterance_id: u64, app: &tauri::AppHand
                         "streaming-text",
                         serde_json::json!({
                             "text": cleaned,
-                            "utterance_id": utterance_id,
+                            "chunk_id": chunk_id,
                         }),
                     )
                     .ok();
@@ -293,13 +297,13 @@ fn process_tdt_utterance(audio: Vec<f32>, utterance_id: u64, app: &tauri::AppHan
 
     let state = match TDT.get().and_then(|r| r.as_ref().ok()) {
         Some(s) => s,
-        None => return,
+        None => {
+            log::warn!("[asr/tdt] model not loaded, skipping utterance #{}", utterance_id);
+            return;
+        }
     };
 
-    let mut lock = match state.try_lock() {
-        Ok(l) => l,
-        Err(_) => return,
-    };
+    let mut lock = state.lock().unwrap(); // dedicated thread, no contention
 
     let duration_ms = (audio.len() as f64 / 16.0) as u64;
     let t0 = std::time::Instant::now();
@@ -318,6 +322,9 @@ fn process_tdt_utterance(audio: Vec<f32>, utterance_id: u64, app: &tauri::AppHan
                     duration_ms
                 );
 
+                // Update backend buffer (for quick mode insertion)
+                crate::buffer::append_text(&cleaned);
+
                 let words: Vec<_> = result
                     .tokens
                     .iter()
@@ -330,6 +337,7 @@ fn process_tdt_utterance(audio: Vec<f32>, utterance_id: u64, app: &tauri::AppHan
                     })
                     .collect();
 
+                // Send to frontend for display
                 app.emit(
                     "refined-text",
                     serde_json::json!({
@@ -340,8 +348,6 @@ fn process_tdt_utterance(audio: Vec<f32>, utterance_id: u64, app: &tauri::AppHan
                     }),
                 )
                 .ok();
-
-                // TODO Phase 5: history::insert_utterance(...)
             }
         }
         Err(e) => log::warn!("[asr/tdt] error: {e}"),

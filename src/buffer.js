@@ -48,8 +48,12 @@ listen('streaming-text', function(event) {
 });
 
 listen('refined-text', function(event) {
-  // V1: TDT refinement logged to history, not visually replaced.
-  // Nemotron streaming output is punctuated and good enough.
+  // TDT produces the authoritative text — show it
+  var text = event.payload.text;
+  if (text) {
+    textBuffer += text + ' ';
+    scheduleFlush();
+  }
 });
 
 listen('buffer-command', function(event) {
