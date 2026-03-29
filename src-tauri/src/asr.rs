@@ -240,55 +240,39 @@ fn process_nemotron_chunk(chunk: &[f32], chunk_id: u64, app: &tauri::AppHandle) 
         }
     };
 
-    let mut lock = state.lock().unwrap(); // dedicated thread, no contention
+    let mut lock = state.lock().unwrap();
 
     let t0 = std::time::Instant::now();
+    log::info!("[asr/nemotron] inferring chunk #{}...", chunk_id);
     match lock.model.transcribe_chunk(chunk) {
-        Ok(text) if !text.is_empty() => {
-            let cleaned = rules::apply_t1(&text);
-            if !cleaned.is_empty() {
-                // Check if it's a command
-                if let Some(cmd) = rules::detect_command(&cleaned) {
-                    // Execute command on backend buffer
-                    match cmd {
-                        rules::BufferCommand::ScratchLast => {
-                            crate::buffer::scratch_last();
+        Ok(text) => {
+            let elapsed = t0.elapsed();
+            if text.is_empty() {
+                log::info!("[asr/nemotron] chunk #{} → empty ({:.0?})", chunk_id, elapsed);
+            } else {
+                log::info!("[asr/nemotron] chunk #{} → '{}' ({:.0?})", chunk_id, &text, elapsed);
+                let cleaned = rules::apply_t1(&text);
+                if !cleaned.is_empty() {
+                    if let Some(cmd) = rules::detect_command(&cleaned) {
+                        match cmd {
+                            rules::BufferCommand::ScratchLast => { crate::buffer::scratch_last(); }
+                            rules::BufferCommand::ClearAll => { crate::buffer::clear(); }
                         }
-                        rules::BufferCommand::ClearAll => {
-                            crate::buffer::clear();
-                        }
-                    }
-                    // Notify frontend to sync
-                    app.emit(
-                        "buffer-command",
-                        serde_json::json!({
+                        app.emit("buffer-command", serde_json::json!({
                             "command": format!("{:?}", cmd),
                             "text": crate::buffer::get_text(),
-                        }),
-                    )
-                    .ok();
-                } else {
-                    log::debug!(
-                        "[asr/nemotron] {:.0?}: '{}'",
-                        t0.elapsed(),
-                        &cleaned
-                    );
-                    // Update backend buffer state (for quick mode insertion)
-                    crate::buffer::append_text(&cleaned);
-                    // Update frontend display
-                    app.emit(
-                        "streaming-text",
-                        serde_json::json!({
+                        })).ok();
+                    } else {
+                        crate::buffer::append_text(&cleaned);
+                        app.emit("streaming-text", serde_json::json!({
                             "text": cleaned,
                             "chunk_id": chunk_id,
-                        }),
-                    )
-                    .ok();
+                        })).ok();
+                    }
                 }
             }
         }
-        Ok(_) => {} // empty result — normal for silence/noise
-        Err(e) => log::warn!("[asr/nemotron] error: {e}"),
+        Err(e) => log::error!("[asr/nemotron] chunk #{} ERROR: {e}", chunk_id),
     }
 }
 
@@ -307,6 +291,7 @@ fn process_tdt_utterance(audio: Vec<f32>, utterance_id: u64, app: &tauri::AppHan
 
     let duration_ms = (audio.len() as f64 / 16.0) as u64;
     let t0 = std::time::Instant::now();
+    log::info!("[asr/tdt] inferring utterance #{} ({}ms audio)...", utterance_id, duration_ms);
 
     match lock
         .model
@@ -350,6 +335,6 @@ fn process_tdt_utterance(audio: Vec<f32>, utterance_id: u64, app: &tauri::AppHan
                 .ok();
             }
         }
-        Err(e) => log::warn!("[asr/tdt] error: {e}"),
+        Err(e) => log::error!("[asr/tdt] utterance #{} ERROR after {:.0?}: {e}", utterance_id, t0.elapsed()),
     }
 }
