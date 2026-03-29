@@ -1,0 +1,30 @@
+# Rust
+target/
+Cargo.lock
+
+# Models (downloaded at runtime)
+models/*.onnx
+models/*.onnx_data
+models/**/*.onnx
+models/**/*.onnx_data
+models/**/*.model
+models/**/*.txt
+models/**/*.json
+
+# Node
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Secrets
+.env
+*.key
+*.pem

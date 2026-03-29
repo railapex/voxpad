@@ -1,0 +1,26 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+:root {
+  --bg: rgba(24, 24, 28, 0.92);
+  --text: #e4e4e7;
+  --text-dim: #71717a;
+  --accent: #6366f1;
+  --border: rgba(255, 255, 255, 0.08);
+  --dot-recording: #ef4444;
+  --dot-idle: #52525b;
+  --radius: 12px;
+  --font-mono: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+}
+
+body {
+  font-family: var(--font-mono);
+  color: var(--text);
+  background: transparent;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}

@@ -1,0 +1,77 @@
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+  backdrop-filter: blur(24px) saturate(1.4);
+  -webkit-backdrop-filter: blur(24px) saturate(1.4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+#buffer {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 14px;
+  line-height: 1.6;
+  padding: 16px;
+  resize: none;
+  overflow-y: auto;
+}
+
+#buffer::placeholder {
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+#status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--dot-idle);
+  transition: background 0.2s;
+}
+
+.dot.recording {
+  background: var(--dot-recording);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+#mode {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mode-quick { color: var(--accent); }
+.mode-buffer { color: #22c55e; }
+
+#wc {
+  margin-left: auto;
+}
+
+/* Fade animation for hide */
+body.hiding #app {
+  opacity: 0;
+  transition: opacity 0.15s ease-out;
+}

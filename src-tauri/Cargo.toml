@@ -1,0 +1,66 @@
+[package]
+name = "voxpad"
+version = "0.1.0"
+edition = "2021"
+description = "See what you're saying — a floating composition buffer with real-time voice transcription"
+
+[lib]
+name = "voxpad_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri
+tauri = { version = "2.10", features = ["tray-icon"] }
+tauri-plugin-log = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Network (model download)
+reqwest = { version = "0.12", features = ["stream"] }
+futures-util = "0.3"
+tokio = { version = "1", features = ["fs"] }
+
+# Threading
+crossbeam-channel = "0.5"
+
+# Audio capture
+cpal = "0.15"
+
+# Audio resampling
+rubato = { version = "0.15", default-features = false }
+
+# ASR models (Parakeet ecosystem) — pulls in ort transitively
+parakeet-rs = { version = "0.3", features = ["cuda", "directml"] }
+
+# ONNX Runtime — explicit dep for our direct Silero VAD implementation
+ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
+
+# VAD
+ndarray = "0.16"
+# silero-vad-rs — adding after ort compat check
+
+[target.'cfg(windows)'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["download-binaries", "cuda", "directml"] }
+windows = { version = "0.61", features = [
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_SystemInformation",
+    "Win32_Foundation",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["download-binaries", "coreml"] }
