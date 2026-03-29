@@ -41,10 +41,17 @@ pub struct DeviceInfo {
 }
 
 /// Handle for a running capture session. Drop to stop.
+/// cpal::Stream contains a raw pointer that isn't Send — we wrap it
+/// because we only access it from the thread that created it.
 pub struct CaptureHandle {
-    _stream: cpal::Stream, // kept alive — dropping stops capture
+    _stream: SendStream,
     stop: Arc<AtomicBool>,
 }
+
+// Safety: cpal::Stream is only accessed from its creation thread.
+// We store it solely to keep it alive.
+struct SendStream(cpal::Stream);
+unsafe impl Send for SendStream {}
 
 impl Drop for CaptureHandle {
     fn drop(&mut self) {
@@ -194,7 +201,7 @@ pub fn start_capture(
         .map_err(|e| format!("spawn processing thread: {e}"))?;
 
     Ok(CaptureHandle {
-        _stream: stream,
+        _stream: SendStream(stream),
         stop,
     })
 }
